@@ -1,13 +1,12 @@
 package eu.comsode.unifiedviews.plugins.extractor.skmartinbudget;
 
 import java.io.File;
-import java.io.InputStream;
-import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
-import java.net.URLConnection;
+import java.net.URLDecoder;
 import java.util.Date;
 
+import org.apache.commons.httpclient.HttpStatus;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.FilenameUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -85,36 +84,54 @@ public class SkMartinBudget extends AbstractDpu<SkMartinBudgetConfig_V1> {
 
                 String subPage = getServerResponse(subPageUrl, httpclient);
 
-                String fileLink = getFinalBillFile(subPage, httpclient);
-                if (StringUtils.isBlank(fileLink)) {
+                String[] fileLink = getFinalBillFile(subPage, httpclient);
+                if (fileLink == null || StringUtils.isBlank(fileLink[0])) {
                     continue;
                 }
-                URL fileUrl = new URL(HOST + fileLink);
-                String outputVirtualPath = FilenameUtils.getName(fileUrl.getPath());
-                String outputSymbolicName = outputVirtualPath;
+                String outputSymbolicName = null;
+
+                HttpGet getFile = new HttpGet(HOST + fileLink[0]);
+                CloseableHttpResponse getFileResp = httpclient.execute(getFile);
+                Header[] getFileRespHeaders = getFileResp.getAllHeaders();
+                StringBuilder headerSb = new StringBuilder();
+                for (Header h : getFileRespHeaders) {
+                    headerSb.append("Key : " + h.getName() + " ,Value : " + h.getValue() + "\n");
+                }
+                LOG.debug(headerSb.toString());
+                Header[] contDis = getFileResp.getHeaders("Content-Disposition");
+                if (contDis != null && contDis.length == 1) {
+                    String[] contDisParts = contDis[0].getValue().split("; ");
+                    for (String pair : contDisParts) {
+                        String[] pairKeyValue = pair.split("=");
+                        if (pairKeyValue.length == 2) {
+                            String key = pairKeyValue[0].trim();
+                            if (key.equals("filename*")) {
+                                outputSymbolicName = URLDecoder.decode(pairKeyValue[1].trim(), "UTF-8").replaceAll("UTF-8''", "");
+                            }
+                        }
+                    }
+                }
                 File outputDirectory;
                 outputDirectory = new File(URI.create(filesOutput.getBaseFileURIString()));
-                File outputFile = File.createTempFile("____", FilenameUtils.getExtension(outputVirtualPath), outputDirectory);
+                File outputFile = File.createTempFile("____", FilenameUtils.getExtension(outputSymbolicName), outputDirectory);
+                try {
+                    FileUtils.copyInputStreamToFile(getFileResp.getEntity().getContent(), outputFile);
+                } finally {
+                    EntityUtils.consumeQuietly(getFileResp.getEntity());
+                    getFileResp.close();
+                }
 
-                URLConnection hc = fileUrl.openConnection();
-                hc.setRequestProperty("User-Agent", "Mozilla/5.0 (Macintosh; U; Intel Mac OS X 10.4; en-US; rv:1.9.2.2) Gecko/20100316 Firefox/3.6.2");
-                InputStream input = hc.getInputStream();
-                FileUtils.copyInputStreamToFile(input, outputFile);
-
-//                String description = fileLink.text();
-
-                filesOutput.addExistingFile(outputVirtualPath, outputFile.toURI().toASCIIString());
-                VirtualPathHelpers.setVirtualPath(filesOutput, outputSymbolicName, outputVirtualPath);
+                filesOutput.addExistingFile(outputSymbolicName, outputFile.toURI().toASCIIString());
+                VirtualPathHelpers.setVirtualPath(filesOutput, outputSymbolicName, outputSymbolicName);
                 Resource resource = ResourceHelpers.getResource(filesOutput, outputSymbolicName);
                 Date now = new Date();
                 resource.setCreated(now);
                 resource.setLast_modified(now);
                 resource.setSize(outputFile.length());
-//                resource.setDescription(description);
+                resource.setDescription(fileLink[1]);
 
                 ResourceHelpers.setResource(filesOutput, outputSymbolicName, resource);
             }
-            int i = 0;
         } catch (Exception ex) {
             throw ContextUtils.dpuException(ctx, ex, "SkMartinBudget.execute.exception");
         }
@@ -150,7 +167,7 @@ public class SkMartinBudget extends AbstractDpu<SkMartinBudgetConfig_V1> {
                 String[] cookieParts = cookies[0].getValue().split("; ");
                 sessionId = cookieParts[0];
             }
-            if (responseCode != HttpURLConnection.HTTP_OK) {
+            if (responseCode != HttpStatus.SC_OK) {
                 LOG.error("GET request not worked");
                 throw new Exception("GET request not worked");
             }
@@ -163,18 +180,19 @@ public class SkMartinBudget extends AbstractDpu<SkMartinBudgetConfig_V1> {
                 response1.close();
             }
         } catch (Exception ex) {
-
+            new Exception("Problem processing server response!", ex);
         }
         return response;
     }
 
-    private String getFinalBillFile(String subPage, CloseableHttpClient httpclient) {
+    private String[] getFinalBillFile(String subPage, CloseableHttpClient httpclient) {
         Element page = Jsoup.parse(subPage);
         Elements linksOnPage = page.select("a[href]");
         for (Element link : linksOnPage) {
             if (StringUtils.isNotBlank(link.text()) && removeAccents(link.text()).startsWith("zaverecny ucet")) {
                 if (link.attr("href").contains("id_dokumenty")) {
-                    return link.attr("href");
+                    String result[] = { link.attr("href"), link.text() };
+                    return result;
                 } else {
                     String subSubPage = getServerResponse(HOST + link.attr("href"), httpclient);
                     return getFinalBillFile(subSubPage, httpclient);
