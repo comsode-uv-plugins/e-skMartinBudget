@@ -5,6 +5,8 @@ import java.net.URI;
 import java.net.URL;
 import java.net.URLDecoder;
 import java.util.Date;
+import java.util.HashSet;
+import java.util.Set;
 
 import org.apache.commons.httpclient.HttpStatus;
 import org.apache.commons.io.FileUtils;
@@ -49,6 +51,8 @@ public class SkMartinBudget extends AbstractDpu<SkMartinBudgetConfig_V1> {
 
     private String sessionId = null;
 
+    private Set<String> uniqueNames;
+
     @DataUnit.AsOutput(name = "filesOutput")
     public WritableFilesDataUnit filesOutput;
 
@@ -58,6 +62,7 @@ public class SkMartinBudget extends AbstractDpu<SkMartinBudgetConfig_V1> {
 
     @Override
     protected void innerExecute() throws DPUException {
+        uniqueNames = new HashSet<String>();
         try (CloseableHttpClient httpclient = HttpClients.createDefault()) {
             String response = getServerResponse(INPUT_URL, httpclient);
             Document doc = null;
@@ -110,6 +115,10 @@ public class SkMartinBudget extends AbstractDpu<SkMartinBudgetConfig_V1> {
                             }
                         }
                     }
+                }
+                if (StringUtils.isBlank(outputSymbolicName) || !uniqueNames.add(outputSymbolicName)) {
+                    outputSymbolicName = Long.toString((new Date()).getTime());
+                    uniqueNames.add(outputSymbolicName);
                 }
                 File outputDirectory;
                 outputDirectory = new File(URI.create(filesOutput.getBaseFileURIString()));
